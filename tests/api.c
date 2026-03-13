@@ -33418,6 +33418,197 @@ static int test_ocsp_callback_fails(void)
     defined(HAVE_OCSP) && \
     defined(HAVE_CERTIFICATE_STATUS_REQUEST) */
 
+/* ---------------------------------------------------------------------------
+ * Tests for non-blocking OCSP with fragmented handshake messages.
+ *
+ * Reproducer for: https://github.com/wolfSSL/wolfssl/pull/9957
+ *
+ * When WOLFSSL_NONBLOCK_OCSP is enabled without WOLFSSL_ASYNC_CRYPT and the
+ * Certificate handshake message is fragmented (due to a low MFL), the
+ * pendingMsg buffer was incorrectly freed after DoTls13HandShakeMsgType
+ * returned OCSP_WANT_READ.  On re-entry the assembled certificate data is
+ * gone, causing BUFFER_ERROR.
+ *
+ * The same pattern applies to the TLS 1.2 code path in DoHandShakeMsg
+ * (internal.c).
+ *
+ * Strategy: use an OCSP IO callback that always returns WANT_READ.  Step
+ * through the handshake and verify we keep getting OCSP_WANT_READ (the
+ * buffer is preserved) rather than BUFFER_ERROR (the buffer was freed).
+ * --------------------------------------------------------------------------- */
+#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
+    defined(HAVE_OCSP) && defined(WOLFSSL_NONBLOCK_OCSP) && \
+    defined(HAVE_MAX_FRAGMENT)
+
+static int test_ocsp_nonblock_frag_cb(void* ctx, const char* url, int urlSz,
+    unsigned char* request, int requestSz, unsigned char** response)
+{
+    (void)ctx;
+    (void)url;
+    (void)urlSz;
+    (void)request;
+    (void)requestSz;
+    (void)response;
+    return WOLFSSL_CBIO_ERR_WANT_READ;
+}
+
+static void test_ocsp_nonblock_frag_resp_free(void* ctx,
+    unsigned char* response)
+{
+    (void)ctx;
+    (void)response;
+}
+
+static int test_ocsp_nonblock_frag_do_handshake(WOLFSSL* ssl_c,
+    WOLFSSL* ssl_s, int max_rounds)
+{
+    byte hs_c = 0, hs_s = 0;
+    int ret, err;
+
+    while (!(hs_c && hs_s) && max_rounds-- > 0) {
+        if (!hs_c) {
+            ret = wolfSSL_connect(ssl_c);
+            if (ret == WOLFSSL_SUCCESS) {
+                hs_c = 1;
+            }
+            else {
+                err = wolfSSL_get_error(ssl_c, ret);
+                if (err == WC_NO_ERR_TRACE(BUFFER_ERROR))
+                    return BUFFER_ERROR;
+                if (err != WOLFSSL_ERROR_WANT_READ &&
+                    err != WOLFSSL_ERROR_WANT_WRITE &&
+                    err != WC_NO_ERR_TRACE(OCSP_WANT_READ)) {
+                    return err;
+                }
+            }
+        }
+        if (!hs_s) {
+            ret = wolfSSL_accept(ssl_s);
+            if (ret == WOLFSSL_SUCCESS) {
+                hs_s = 1;
+            }
+            else {
+                err = wolfSSL_get_error(ssl_s, ret);
+                if (err == WC_NO_ERR_TRACE(BUFFER_ERROR))
+                    return BUFFER_ERROR;
+                if (err != WOLFSSL_ERROR_WANT_READ &&
+                    err != WOLFSSL_ERROR_WANT_WRITE &&
+                    err != WC_NO_ERR_TRACE(OCSP_WANT_READ)) {
+                    return err;
+                }
+            }
+        }
+    }
+    if (hs_c && hs_s)
+        return 0;
+    return WOLFSSL_ERROR_WANT_READ;
+}
+
+#if defined(WOLFSSL_TLS13)
+static int test_tls13_nonblock_ocsp_fragment(void)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    int ret;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfTLSv1_3_client_method, wolfTLSv1_3_server_method), 0);
+
+    ExpectIntEQ(wolfSSL_CTX_EnableOCSP(ctx_c,
+        WOLFSSL_OCSP_CHECKALL | WOLFSSL_OCSP_URL_OVERRIDE), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_SetOCSP_OverrideURL(ctx_c, "http://127.0.0.1:0"),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_SetOCSP_Cb(ctx_c,
+        test_ocsp_nonblock_frag_cb, test_ocsp_nonblock_frag_resp_free, NULL),
+        WOLFSSL_SUCCESS);
+
+    /* MFL 1024 — small enough to fragment a typical Certificate message */
+    ExpectIntEQ(wolfSSL_UseMaxFragment(ssl_c, WOLFSSL_MFL_2_10),
+        WOLFSSL_SUCCESS);
+
+    if (EXPECT_SUCCESS()) {
+        ret = test_ocsp_nonblock_frag_do_handshake(ssl_c, ssl_s, 20);
+        /* Handshake won't complete (OCSP never finishes), but the critical
+         * assertion is that we never got BUFFER_ERROR. */
+        ExpectIntNE(ret, BUFFER_ERROR);
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#else
+static int test_tls13_nonblock_ocsp_fragment(void)
+{
+    return TEST_SKIPPED;
+}
+#endif /* WOLFSSL_TLS13 */
+
+#if !defined(WOLFSSL_NO_TLS12)
+static int test_tls12_nonblock_ocsp_fragment(void)
+{
+    EXPECT_DECLS;
+    WOLFSSL_CTX *ctx_c = NULL, *ctx_s = NULL;
+    WOLFSSL *ssl_c = NULL, *ssl_s = NULL;
+    struct test_memio_ctx test_ctx;
+    int ret;
+
+    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
+
+    ExpectIntEQ(test_memio_setup(&test_ctx, &ctx_c, &ctx_s, &ssl_c, &ssl_s,
+        wolfTLSv1_2_client_method, wolfTLSv1_2_server_method), 0);
+
+    ExpectIntEQ(wolfSSL_CTX_EnableOCSP(ctx_c,
+        WOLFSSL_OCSP_CHECKALL | WOLFSSL_OCSP_URL_OVERRIDE), WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_SetOCSP_OverrideURL(ctx_c, "http://127.0.0.1:0"),
+        WOLFSSL_SUCCESS);
+    ExpectIntEQ(wolfSSL_CTX_SetOCSP_Cb(ctx_c,
+        test_ocsp_nonblock_frag_cb, test_ocsp_nonblock_frag_resp_free, NULL),
+        WOLFSSL_SUCCESS);
+
+    /* MFL 1024 — small enough to fragment a typical Certificate message */
+    ExpectIntEQ(wolfSSL_UseMaxFragment(ssl_c, WOLFSSL_MFL_2_10),
+        WOLFSSL_SUCCESS);
+
+    if (EXPECT_SUCCESS()) {
+        ret = test_ocsp_nonblock_frag_do_handshake(ssl_c, ssl_s, 20);
+        ExpectIntNE(ret, BUFFER_ERROR);
+    }
+
+    wolfSSL_free(ssl_c);
+    wolfSSL_free(ssl_s);
+    wolfSSL_CTX_free(ctx_c);
+    wolfSSL_CTX_free(ctx_s);
+
+    return EXPECT_RESULT();
+}
+#else
+static int test_tls12_nonblock_ocsp_fragment(void)
+{
+    return TEST_SKIPPED;
+}
+#endif /* !WOLFSSL_NO_TLS12 */
+
+#else /* !HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES || !HAVE_OCSP ||
+       * !WOLFSSL_NONBLOCK_OCSP || !HAVE_MAX_FRAGMENT */
+static int test_tls13_nonblock_ocsp_fragment(void)
+{
+    return TEST_SKIPPED;
+}
+static int test_tls12_nonblock_ocsp_fragment(void)
+{
+    return TEST_SKIPPED;
+}
+#endif /* HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES && HAVE_OCSP &&
+        * WOLFSSL_NONBLOCK_OCSP && HAVE_MAX_FRAGMENT */
+
 #ifdef HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES
 static int test_wolfSSL_SSLDisableRead_recv(WOLFSSL *ssl, char *buf, int sz,
                                              void *ctx)
@@ -34410,6 +34601,10 @@ TEST_CASE testCases[] = {
     TEST_DECL(test_wolfSSL_UseOCSPStaplingV2),
     TEST_DECL(test_self_signed_stapling),
     TEST_DECL(test_ocsp_callback_fails),
+
+    /* Non-blocking OCSP with fragmented handshake (PR #9957) */
+    TEST_DECL(test_tls13_nonblock_ocsp_fragment),
+    TEST_DECL(test_tls12_nonblock_ocsp_fragment),
 
     /* Multicast */
     TEST_DECL(test_wolfSSL_mcast),
