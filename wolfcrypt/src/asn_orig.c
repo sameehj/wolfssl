@@ -1608,27 +1608,36 @@ static int GetCertHeader(DecodedCert* cert)
 {
     int ret = 0, len;
 
-    if (GetSequence(cert->source, &cert->srcIdx, &len, cert->maxIdx) < 0)
+    if (GetSequence(cert->source, &cert->srcIdx, &len, cert->maxIdx) < 0) {
+        CERT_EVENT_FIELD(cert, ASN_PARSE_E, WC_CEV_FIELD_ENCODING);
         return ASN_PARSE_E;
+    }
 
     /* Reset the max index for the size indicated in the outer wrapper. */
     cert->maxIdx = (word32)len + cert->srcIdx;
     cert->certBegin = cert->srcIdx;
 
-    if (GetSequence(cert->source, &cert->srcIdx, &len, cert->maxIdx) < 0)
+    if (GetSequence(cert->source, &cert->srcIdx, &len, cert->maxIdx) < 0) {
+        CERT_EVENT_FIELD(cert, ASN_PARSE_E, WC_CEV_FIELD_ENCODING);
         return ASN_PARSE_E;
+    }
 
     cert->sigIndex = (word32)len + cert->srcIdx;
-    if (cert->sigIndex > cert->maxIdx)
+    if (cert->sigIndex > cert->maxIdx) {
+        CERT_EVENT_FIELD(cert, ASN_PARSE_E, WC_CEV_FIELD_ENCODING);
         return ASN_PARSE_E;
+    }
 
     if (GetExplicitVersion(cert->source, &cert->srcIdx, &cert->version,
-                                                            cert->sigIndex) < 0)
+                                                        cert->sigIndex) < 0) {
+        CERT_EVENT_FIELD(cert, ASN_PARSE_E, WC_CEV_FIELD_VERSION);
         return ASN_PARSE_E;
+    }
 
     ret = wc_GetSerialNumber(cert->source, &cert->srcIdx, cert->serial,
         &cert->serialSz, cert->sigIndex);
     if (ret < 0) {
+        CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_SERIAL);
         return ret;
     }
 
@@ -2845,13 +2854,17 @@ int wc_GetPubX509(DecodedCert* cert, int verify, int* badDate)
 #endif
         /* Using the sigIndex as the upper bound because that's where the
          * actual certificate data ends. */
-        if ((ret = GetSigAlg(cert, &cert->signatureOID, cert->sigIndex)) < 0)
+        if ((ret = GetSigAlg(cert, &cert->signatureOID, cert->sigIndex)) < 0) {
+            CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_TBS_SIGALG);
             return ret;
+        }
 
         WOLFSSL_MSG("Got Algo ID");
 
-        if ( (ret = GetName(cert, ASN_ISSUER, (int)cert->sigIndex)) < 0)
+        if ( (ret = GetName(cert, ASN_ISSUER, (int)cert->sigIndex)) < 0) {
+            CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_ISSUER);
             return ret;
+        }
 
         if ( (ret = GetValidity(cert, verify, (int)cert->sigIndex)) < 0) {
             /* Only a date error is deferred for the caller to override. A
@@ -2859,6 +2872,7 @@ int wc_GetPubX509(DecodedCert* cert, int verify, int* badDate)
              * something a verify callback may wave through. */
             if ((ret != WC_NO_ERR_TRACE(ASN_BEFORE_DATE_E)) &&
                     (ret != WC_NO_ERR_TRACE(ASN_AFTER_DATE_E))) {
+                CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_VALIDITY);
                 return ret;
             }
             *badDate = ret;
@@ -2867,8 +2881,10 @@ int wc_GetPubX509(DecodedCert* cert, int verify, int* badDate)
     }
 #endif
 
-    if ( (ret = GetName(cert, ASN_SUBJECT, (int)cert->sigIndex)) < 0)
+    if ( (ret = GetName(cert, ASN_SUBJECT, (int)cert->sigIndex)) < 0) {
+        CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_SUBJECT);
         return ret;
+    }
 
     WOLFSSL_MSG("Got Subject Name");
     return ret;
@@ -2908,8 +2924,10 @@ int DecodeToKey(DecodedCert* cert, int verify)
     }
 
     ret = GetCertKey(cert, cert->source, &cert->srcIdx, cert->maxIdx);
-    if (ret != 0)
+    if (ret != 0) {
+        CERT_EVENT_FIELD(cert, ret, WC_CEV_FIELD_SPKI);
         return ret;
+    }
 
     WOLFSSL_MSG("Got Key");
 
@@ -4503,6 +4521,9 @@ static int DecodeCertExtensions(DecodedCert* cert)
 
     while (idx < (word32)sz) {
         word32 localIdx;
+    #ifdef WOLFSSL_CERT_EVENTS
+        word32 oidIdx = 0;
+    #endif
 
         if (GetSequence(input, &idx, &length, sz) < 0) {
             WOLFSSL_MSG("\tfail: should be a SEQUENCE");
@@ -4510,6 +4531,9 @@ static int DecodeCertExtensions(DecodedCert* cert)
         }
 
         oid = 0;
+    #ifdef WOLFSSL_CERT_EVENTS
+        oidIdx = idx;
+    #endif
         if ((ret = GetObjectId(input, &idx, &oid, oidCertExtType, sz)) < 0) {
             WOLFSSL_MSG("\tfail: OBJECT ID");
             return ret;
@@ -4544,6 +4568,19 @@ static int DecodeCertExtensions(DecodedCert* cert)
 
         ret = DecodeExtensionType(input + idx, (word32)length, oid, critical,
             cert, NULL);
+    #ifdef WOLFSSL_CERT_EVENTS
+        if (ret < 0) {
+            /* GetObjectId() has already checked the OID's encoding. */
+            int oidSz = 0;
+            if (GetASNObjectId(input, &oidIdx, &oidSz, (word32)sz) == 0) {
+                CertEventExtension(cert, ret, oid, input + oidIdx,
+                    (word32)oidSz, critical);
+            }
+            else {
+                CertEventExtension(cert, ret, oid, NULL, 0, critical);
+            }
+        }
+    #endif
         if (ret == WC_NO_ERR_TRACE(ASN_CRIT_EXT_E)) {
             ret = 0;
             criticalFail = 1;
@@ -9893,6 +9930,10 @@ int ParseCRL(RevokedCert* rcert, DecodedCRL* dcrl, const byte* buff, word32 sz,
     }
 
     WOLFSSL_MSG("Found CRL issuer CA");
+#ifdef WOLFSSL_CERT_EVENTS
+    /* A later ASN_CRL_NO_SIGNER_E means the issuer may not sign CRLs. */
+    dcrl->crlSignerFound = 1;
+#endif
     ret = VerifyCRL_Signature(&sigCtx, buff + dcrl->certBegin,
            dcrl->sigIndex - dcrl->certBegin, dcrl->signature, dcrl->sigLength,
            dcrl->signatureOID, sigParams, sigParamsSz, ca, dcrl->heap);
