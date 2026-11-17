@@ -22792,9 +22792,12 @@ static void PeerCertEventHeldResult(WOLFSSL* ssl, int ret)
     ev.role     = WC_CEV_ROLE_CANDIDATE;
     ev.depth    = 0;
 #ifdef KEEP_PEER_CERT
-    if (ssl->peerCert.derCert != NULL) {
-        ev.der   = ssl->peerCert.derCert->buffer;
-        ev.derSz = ssl->peerCert.derCert->length;
+    {
+        const DerBuffer* peerDer = GetPeerCertDer(ssl);
+        if (peerDer != NULL) {
+            ev.der   = peerDer->buffer;
+            ev.derSz = peerDer->length;
+        }
     }
 #endif
     ev.ssl = ssl;

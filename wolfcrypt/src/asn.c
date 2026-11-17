@@ -24566,6 +24566,8 @@ static const CertEventStrictCheck certEventStrictChecks[] = {
       WC_CEV_COND_CERT_NO_OCSP, AUTH_INFO_OID },
 };
 
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_AKI) || \
+    defined(WOLFSSL_X509_TINY_CRL_DP) || defined(WOLFSSL_X509_TINY_AIA)
 /* Whether the certificate is self-signed, as wolfSSL judged it.
  *
  * A root CA whose AKID names its own key is trusted without checking its
@@ -24585,6 +24587,7 @@ static int CertEventSelfSigned(const DecodedCert* cert)
     return cert->extAuthKeyIdSet && cert->extSubjKeyIdSet &&
         (XMEMCMP(cert->extAuthKeyId, cert->extSubjKeyId, KEYID_SIZE) == 0);
 }
+#endif
 
 /* Whether a strict check fires on a certificate.
  *

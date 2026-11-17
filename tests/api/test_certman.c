@@ -757,6 +757,8 @@ int test_wolfSSL_CertManagerSetVerify(void)
     return EXPECT_RESULT();
 }
 
+/* TEST_CERT_EVENTS implies !NO_FILESYSTEM, but check-api-guards.py does not
+ * expand it, so the tests that load files repeat that condition. */
 #if defined(WOLFSSL_CERT_EVENTS) && !defined(NO_FILESYSTEM) && \
     !defined(NO_CERTS) && !defined(NO_TLS) && !defined(NO_ASN_TIME) && \
     !defined(NO_WOLFSSL_CM_VERIFY) && !defined(NO_RSA) && \
@@ -889,7 +891,7 @@ static time_t certEventBeforeValidTimeCb(time_t* t)
 int test_wolfSSL_CertManagerCertEvents(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
     WOLFSSL_CERT_MANAGER* cm = NULL;
     CertEventLog log;
     int tmp = myVerifyAction;
@@ -1006,7 +1008,7 @@ int test_wolfSSL_CertManagerCertEvents(void)
 int test_wolfSSL_CertManagerCertEvents_badCerts(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
     static const struct {
         const char* file;
         int         expected;  /* Return code with the ASN template parser. */
@@ -1079,20 +1081,28 @@ int test_wolfSSL_CertManagerCertEvents_badCerts(void)
 int test_wolfSSL_CertEvents_extensions(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_SKI)
     static const byte oidSkid[]   = { 0x55, 0x1d, 0x0e };
+#endif
     static const byte oidKu[]     = { 0x55, 0x1d, 0x0f };
     static const byte oidSan[]    = { 0x55, 0x1d, 0x11 };
     static const byte oidBc[]     = { 0x55, 0x1d, 0x13 };
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_CRL_DP)
     static const byte oidCrlDp[]  = { 0x55, 0x1d, 0x1f };
+#endif
 #if (defined(WOLFSSL_SEP) || defined(WOLFSSL_CERT_EXT)) && \
     (!defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_POLICIES))
     static const byte oidPolicy[] = { 0x55, 0x1d, 0x20 };
 #endif
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_AKI)
     static const byte oidAkid[]   = { 0x55, 0x1d, 0x23 };
+#endif
     static const byte oidEku[]    = { 0x55, 0x1d, 0x25 };
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_AIA)
     static const byte oidAia[]    = { 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07,
                                       0x01, 0x01 };
+#endif
     /* 1.3.6.1.4.1.99999.1 */
     static const byte oidUnknown[] = { 0x2b, 0x06, 0x01, 0x04, 0x01, 0x86,
                                        0x8d, 0x1f, 0x01 };
@@ -1227,7 +1237,7 @@ int test_wolfSSL_CertEvents_extensions(void)
 int test_wolfSSL_CertEvents_fields(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
     static const struct {
         const char* file;
         int         field;
@@ -1801,7 +1811,8 @@ int test_wolfSSL_CertEvents_trustAnchor(void)
 int test_wolfSSL_CertEvents_infoEcc(void)
 {
     EXPECT_DECLS;
-#if defined(TEST_CERT_EVENTS) && defined(HAVE_ECC) && !defined(NO_ECC256) && \
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM) && \
+    defined(HAVE_ECC) && !defined(NO_ECC256) && \
     !defined(NO_ECC_SECP)
     WOLFSSL_CERT_MANAGER* cm = NULL;
     CertEventLog log;
@@ -1879,7 +1890,7 @@ static int certEventLoadCrl(WOLFSSL_CERT_MANAGER* cm, const char* name)
 int test_wolfSSL_CertEvents_crlCheck(void)
 {
     EXPECT_DECLS;
-#if defined(TEST_CERT_EVENTS) && defined(HAVE_CRL)
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM) && defined(HAVE_CRL)
     static const struct {
         const char* crl;    /* NULL to load no CRL */
         int         error;
@@ -2040,12 +2051,18 @@ int test_wolfSSL_CertEvents_crlLoad(void)
 int test_wolfSSL_CertEvents_strict(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_AKI)
     static const byte akidOid[] = { 0x55, 0x1d, 0x23 };
+#endif
     static const byte kuOid[]   = { 0x55, 0x1d, 0x0f };
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_CRL_DP)
     static const byte crlDpOid[] = { 0x55, 0x1d, 0x1f };
+#endif
+#if !defined(WOLFSSL_X509_TINY) || defined(WOLFSSL_X509_TINY_AIA)
     static const byte aiaOid[]  = { 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07,
                                     0x01, 0x01 };
+#endif
     static const struct {
         const char* file;
         word32      check;      /* 0 when no check fires */
@@ -2217,7 +2234,7 @@ int test_wolfSSL_CertEvents_strict(void)
 int test_wolfSSL_CertEvents_strictTrustAnchor(void)
 {
     EXPECT_DECLS;
-#ifdef TEST_CERT_EVENTS
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM)
     WOLFSSL_CERT_MANAGER* cm = NULL;
     CertEventLog log;
     const char* file = "./certs/test/cert-events/strict-ca-no-ku.der";
@@ -2311,7 +2328,8 @@ int test_wolfSSL_CertEvents_strictNoCertManager(void)
 int test_wolfSSL_CertEvents_strictCrl(void)
 {
     EXPECT_DECLS;
-#if defined(TEST_CERT_EVENTS) && defined(HAVE_CRL) && \
+#if defined(TEST_CERT_EVENTS) && !defined(NO_FILESYSTEM) && \
+    defined(HAVE_CRL) && \
     !defined(WOLFSSL_NO_CRL_DATE_CHECK)
     WOLFSSL_CERT_MANAGER* cm = NULL;
     CertEventLog log;
@@ -2388,7 +2406,8 @@ static int certEventAllowCrlMissingCb(int preverify,
 int test_wolfSSL_CertEvents_strictRevocation(void)
 {
     EXPECT_DECLS;
-#if defined(TEST_CERT_EVENTS_CRL_DP) && defined(HAVE_CRL)
+#if defined(TEST_CERT_EVENTS_CRL_DP) && !defined(NO_FILESYSTEM) && \
+    defined(HAVE_CRL)
     WOLFSSL_CERT_MANAGER* cm = NULL;
     CertEventLog log;
     const char* file = "./certs/test/cert-events/good.der";
