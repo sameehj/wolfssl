@@ -22768,19 +22768,16 @@ static void PeerCertEventHeldResult(WOLFSSL* ssl, int ret)
 {
     WOLFSSL_CERT_MANAGER* cm = SSL_CM(ssl);
     WOLFSSL_CERT_EVENT ev;
-
-    if (!ssl->certEventResultHeld) {
-        return;
-    }
     /* Not final yet: the message is processed again. */
-    if ((ret == WC_NO_ERR_TRACE(WC_PENDING_E))
-    #ifdef WOLFSSL_NONBLOCK_OCSP
-            || (ret == WC_NO_ERR_TRACE(OCSP_WANT_READ))
-    #endif
-    #ifdef WOLFSSL_HAVE_HS_SUSPEND
-            || IsHsSuspendErr(ret)
-    #endif
-            ) {
+    int again = (ret == WC_NO_ERR_TRACE(WC_PENDING_E));
+
+#ifdef WOLFSSL_NONBLOCK_OCSP
+    again = again || (ret == WC_NO_ERR_TRACE(OCSP_WANT_READ));
+#endif
+#ifdef WOLFSSL_HAVE_HS_SUSPEND
+    again = again || IsHsSuspendErr(ret);
+#endif
+    if ((!ssl->certEventResultHeld) || again) {
         return;
     }
     ssl->certEventResultHeld = 0;
