@@ -2334,6 +2334,9 @@ struct DecodedCert {
                                                   * 1 in ParseCertRelative(),
                                                   * 2 run by the caller */
     word32                    certEventStrict;   /* Checks to enforce */
+    word32                    certEventStrictPending; /* Enforced checks
+                                                  * that fired, not yet
+                                                  * returned */
     byte                      certEventUid;      /* Unique IDs present: 1
                                                   * issuer, 2 subject */
     byte                      certEventDecoded;  /* Fully decoded */
@@ -2634,6 +2637,8 @@ WOLFSSL_API int wc_SetCertEventStrict(DecodedCert* cert, word32 enforce);
 WOLFSSL_LOCAL int wc_CertEventStrictResolve(word32 enforce, word32* resolved);
 WOLFSSL_LOCAL void wc_CertEventStrictDefer(DecodedCert* cert, word32 enforce);
 WOLFSSL_LOCAL int wc_CertEventStrictChecks(DecodedCert* cert);
+WOLFSSL_LOCAL word32 wc_CertEventStrictTake(DecodedCert* cert);
+WOLFSSL_LOCAL int wc_CertEventStrictNext(word32* pending);
 WOLFSSL_LOCAL void wc_CertEventSetConnection(DecodedCert* cert, void* ssl,
                                              const byte* notCaHash);
 WOLFSSL_LOCAL void wc_CertEventIdentity(const DecodedCert* cert,

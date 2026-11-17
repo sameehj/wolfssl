@@ -20674,13 +20674,14 @@ int ProcessPeerCerts(WOLFSSL* ssl, byte* input, word32* inOutIdx,
                     ret = DoVerifyCallbackHeldCrl(ssl, args, ret, &heldCrlRet);
                 #ifdef WOLFSSL_CERT_EVENTS
                     /* Another failure was allowed: the strict checks still
-                     * apply. Not to a CA left out of the chain. */
-                    if ((ret == 0) && !skipAddCA) {
+                     * apply, and each one must be allowed. Not to a CA left
+                     * out of the chain. */
+                    while ((ret == 0) && !skipAddCA) {
                         ret = wc_CertEventStrictChecks(args->dCert);
-                        if (ret != 0) {
-                            ret = DoVerifyCallback(SSL_CM(ssl), ssl, ret,
-                                args);
+                        if (ret == 0) {
+                            break;
                         }
+                        ret = DoVerifyCallback(SSL_CM(ssl), ssl, ret, args);
                     }
                 #endif
                     if (CrlErrWaived(ssl, ret))
@@ -21508,13 +21509,15 @@ int ProcessPeerCerts(WOLFSSL* ssl, byte* input, word32* inOutIdx,
             #endif
             }
         #ifdef WOLFSSL_CERT_EVENTS
-            /* Another failure was allowed: the strict checks still apply. */
-            if ((ret == 0) && (args->count > 0) && args->dCertInit &&
+            /* Another failure was allowed: the strict checks still apply,
+             * and each one must be allowed. */
+            while ((ret == 0) && (args->count > 0) && args->dCertInit &&
                     !UsingChainVerifyCb(ssl)) {
                 ret = wc_CertEventStrictChecks(args->dCert);
-                if (ret != 0) {
-                    ret = DoVerifyCallback(SSL_CM(ssl), ssl, ret, args);
+                if (ret == 0) {
+                    break;
                 }
+                ret = DoVerifyCallback(SSL_CM(ssl), ssl, ret, args);
             }
         #endif
 

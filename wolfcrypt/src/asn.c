@@ -24231,10 +24231,29 @@ static int CertEventKeyBits(const DecodedCert* cert)
 #ifdef HAVE_ECC
     if (cert->keyOID == ECDSAk) {
         int curveId = CheckCurve(cert->pkCurveOID);
+        const ecc_set_type* params = NULL;
+        const char* p = NULL;
         if (curveId >= 0) {
-            int sz = wc_ecc_get_curve_size_from_id(curveId);
-            if (sz > 0) {
-                bits = sz * 8;
+            params = wc_ecc_get_curve_params(wc_ecc_get_curve_idx(curveId));
+        }
+        if (params != NULL) {
+            p = params->prime;
+        }
+        /* The curve size in bytes rounds up curves such as P-521, so count
+         * the bits of the field prime. */
+        if (p != NULL) {
+            signed char top;
+
+            while (*p == '0') {
+                p++;
+            }
+            top = HexCharToByte(*p);
+            if (top > 0) {
+                bits = (int)XSTRLEN(p) * 4;
+                while ((top & 0x8) == 0) {
+                    bits--;
+                    top = (signed char)(top << 1);
+                }
             }
         }
     }
@@ -24636,31 +24655,27 @@ static int CertEventStrictFires(const DecodedCert* cert, word32 check)
 /* Run the strict profile checks on a decoded certificate, once.
  *
  * Each check that fires is reported: as a NOTICE, or as a DEFECT when it is
- * enforced. The checks only run when turned on with wc_SetCertEventStrict()
- * or wc_CertEventStrictDefer(), when an event callback or an enforced check
- * is set, and when the certificate was fully decoded. Callers run them once
- * no other failure is pending: when nothing else failed, or when the verify
- * callback allowed what did. Later calls do nothing.
+ * enforced. The enforced checks that fired are kept in
+ * cert->certEventStrictPending. The checks only run when turned on with
+ * wc_SetCertEventStrict() or wc_CertEventStrictDefer(), when an event
+ * callback or an enforced check is set, and when the certificate was fully
+ * decoded. Later calls do nothing.
  *
- * @param [in] cert  Decoded certificate.
- * @return  0 when no enforced check fired.
- * @return  ASN_STRICT_*_E of the first enforced check that fired.
+ * @param [in, out] cert  Decoded certificate.
  */
-int wc_CertEventStrictChecks(DecodedCert* cert)
+static void CertEventStrictRun(DecodedCert* cert)
 {
-    int ret = 0;
     size_t i;
 
-    if ((cert == NULL) || (cert->certEventStrictOn == 0) ||
-            (!cert->certEventDecoded) ||
+    if ((cert->certEventStrictOn == 0) || (!cert->certEventDecoded) ||
             ((cert->certEventCb == NULL) && (cert->certEventStrict == 0))) {
-        return 0;
+        return;
     }
     /* Run once. */
     cert->certEventStrictOn = 0;
 #ifdef WOLFSSL_CERT_REQ
     if (cert->isCSR) {
-        return 0;
+        return;
     }
 #endif
 
@@ -24685,13 +24700,81 @@ int wc_CertEventStrictChecks(DecodedCert* cert)
             WC_CEV_KIND_NOTICE, c->error, field, (c->extOID != 0) ?
             WC_CEV_REASON_MISSING : WC_CEV_REASON_POLICY, c->extOID, oid,
             oidSz, 0, c->condition);
-        if (enforced && (ret == 0)) {
-            ret = c->error;
-            WOLFSSL_ERROR_VERBOSE(ret);
+        if (enforced) {
+            cert->certEventStrictPending |= c->check;
         }
     }
+}
 
-    return ret;
+/* Take the next enforced strict check that fired from a set of them.
+ *
+ * @param [in, out] pending  Enforced checks that fired. enum
+ *                           wc_CertEventStrict bits. The one returned is
+ *                           removed.
+ * @return  0 when none is left.
+ * @return  ASN_STRICT_*_E of the next check.
+ */
+int wc_CertEventStrictNext(word32* pending)
+{
+    size_t i;
+
+    if (pending == NULL) {
+        return 0;
+    }
+    for (i = 0; i < XELEM_CNT(certEventStrictChecks); i++) {
+        const CertEventStrictCheck* c = &certEventStrictChecks[i];
+
+        if ((*pending & c->check) != 0) {
+            *pending &= ~c->check;
+            WOLFSSL_ERROR_VERBOSE(c->error);
+            return c->error;
+        }
+    }
+    *pending = 0;
+    return 0;
+}
+
+/* Run the strict profile checks on a decoded certificate and return the next
+ * enforced check that fired.
+ *
+ * The checks run, and are reported, on the first call only. Each call returns
+ * the error of one enforced check that fired, until none is left. Callers
+ * call it once no other failure is pending: when nothing else failed, or when
+ * the verify callback allowed what did. When the verify callback allows a
+ * strict failure, call again so that each one must be allowed.
+ *
+ * @param [in, out] cert  Decoded certificate.
+ * @return  0 when no enforced check that fired is left.
+ * @return  ASN_STRICT_*_E of the next enforced check that fired.
+ */
+int wc_CertEventStrictChecks(DecodedCert* cert)
+{
+    if (cert == NULL) {
+        return 0;
+    }
+    CertEventStrictRun(cert);
+    return wc_CertEventStrictNext(&cert->certEventStrictPending);
+}
+
+/* Run the strict profile checks on a decoded certificate and take all the
+ * enforced checks that fired, for a caller that has more checks to run
+ * first.
+ *
+ * @param [in, out] cert  Decoded certificate.
+ * @return  Enforced checks that fired and were not yet returned. enum
+ *          wc_CertEventStrict bits. Pass to wc_CertEventStrictNext().
+ */
+word32 wc_CertEventStrictTake(DecodedCert* cert)
+{
+    word32 pending;
+
+    if (cert == NULL) {
+        return 0;
+    }
+    CertEventStrictRun(cert);
+    pending = cert->certEventStrictPending;
+    cert->certEventStrictPending = 0;
+    return pending;
 }
 
 /* Report why verifying a certificate against its signer failed.

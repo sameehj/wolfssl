@@ -940,6 +940,24 @@ static int cm_verify_err_overridable(int err)
             return 0;
     }
 }
+
+#ifdef WOLFSSL_CERT_EVENTS
+/* Whether the error is from an enforced strict check. */
+static int cm_verify_err_strict(int err)
+{
+    switch (err) {
+        case WC_NO_ERR_TRACE(ASN_STRICT_UNIQUE_ID_E):
+        case WC_NO_ERR_TRACE(ASN_STRICT_NO_AKID_E):
+        case WC_NO_ERR_TRACE(ASN_STRICT_NO_KEY_USAGE_E):
+        case WC_NO_ERR_TRACE(ASN_STRICT_NO_CRL_DP_E):
+        case WC_NO_ERR_TRACE(ASN_STRICT_NO_OCSP_E):
+            return 1;
+
+        default:
+            return 0;
+    }
+}
+#endif
 #endif
 
 #if (!defined(NO_WOLFSSL_CLIENT) || !defined(WOLFSSL_NO_CLIENT_AUTH)) || \
@@ -991,11 +1009,12 @@ void CM_CertEventResult(WOLFSSL_CERT_MANAGER* cm, int error,
  * @param [out] crlErr   CRL result, not merged into the return value. May be
  *                       NULL.
  * @param [in] depth     Chain depth for validation events, -1 when not known.
- * @param [in] strictErr  NULL to send the RESULT event. Otherwise the caller
- *                       has more checks to run and sends it: when the
- *                       certificate failed another check, the strict checks
- *                       still run and their error is returned here, 0 when
- *                       none.
+ * @param [out] strictPending  NULL to send the RESULT event. Otherwise the
+ *                       caller has more checks to run and sends it. The
+ *                       enforced strict checks that fired are returned here,
+ *                       not in the return value, less any the verify
+ *                       callback allowed. The caller applies them after its
+ *                       own checks with wc_CertEventStrictNext().
  * @return  WOLFSSL_SUCCESS on success.
  * @return  MEMORY_E when dynamic memory allocation fails.
  * @return  NOT_COMPILED_IN when converting from PEM to DER is not a feature of
@@ -1003,7 +1022,7 @@ void CM_CertEventResult(WOLFSSL_CERT_MANAGER* cm, int error,
  */
 static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
     const unsigned char* buff, long sz, int format, int prev_err, int* crlErr,
-    int depth, int* strictErr)
+    int depth, word32* strictPending)
 {
     int ret = 0;
     int crlRet = 0;
@@ -1015,7 +1034,7 @@ static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
 
     (void)prev_err;
     (void)depth;
-    (void)strictErr;
+    (void)strictPending;
 
     if (crlErr != NULL) {
         *crlErr = 0;
@@ -1089,12 +1108,11 @@ static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
 #ifdef WOLFSSL_CERT_EVENTS
     /* Last, so that a verify callback allowing a strict failure does not also
      * skip a check that has not run yet. */
-    if ((ret == 0) && (crlRet == 0)) {
-        ret = wc_CertEventStrictChecks(cert);
+    if (strictPending != NULL) {
+        *strictPending = wc_CertEventStrictTake(cert);
     }
-    else if (strictErr != NULL) {
-        /* The caller may yet accept the certificate. */
-        *strictErr = wc_CertEventStrictChecks(cert);
+    else if ((ret == 0) && (crlRet == 0)) {
+        ret = wc_CertEventStrictChecks(cert);
     }
 #endif
 
@@ -1121,6 +1139,13 @@ static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
         if (!cm_verify_err_overridable(ret)) {
             fatal = 1;
         }
+    #ifdef WOLFSSL_CERT_EVENTS
+        /* A trust anchor that failed an enforced strict check was not
+         * loaded, and the callback is not asked. */
+        if (cm_verify_err_strict(ret)) {
+            fatal = 1;
+        }
+    #endif
     }
     /* Use callback to perform verification too if available. */
     if ((!fatal) && cm->verifyCallback) {
@@ -1162,10 +1187,29 @@ static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
                 crlRet = 0;
             }
         #ifdef WOLFSSL_CERT_EVENTS
-            /* Another failure was allowed: the strict checks still apply. */
-            if (ret == 0) {
-                ret = wc_CertEventStrictChecks(cert);
-                if (ret != 0) {
+            /* Another failure was allowed: the strict checks still apply,
+             * and each one must be allowed. */
+            if (strictPending != NULL) {
+                word32 rest = *strictPending;
+
+                while (ret == 0) {
+                    int strictRet = wc_CertEventStrictNext(&rest);
+
+                    /* One the callback rejects is left for the caller. */
+                    if ((strictRet == 0) ||
+                            (DoVerifyCallback(cm, NULL, strictRet, args) !=
+                             0)) {
+                        break;
+                    }
+                    *strictPending = rest;
+                }
+            }
+            else {
+                while (ret == 0) {
+                    ret = wc_CertEventStrictChecks(cert);
+                    if (ret == 0) {
+                        break;
+                    }
                     ret = DoVerifyCallback(cm, NULL, ret, args);
                 }
             }
@@ -1195,7 +1239,7 @@ static int CM_VerifyBuffer_int(WOLFSSL_CERT_MANAGER* cm,
 
 #ifdef WOLFSSL_CERT_EVENTS
     /* The final outcome, after any verify callback override. */
-    if ((prev_err == 0) && (strictErr == NULL)) {
+    if ((prev_err == 0) && (strictPending == NULL)) {
         CM_CertEventResult(cm, ret, depth, buff, (word32)sz,
             WC_VAR_OK(cert) ? cert : NULL);
     }
@@ -1239,8 +1283,8 @@ int CM_VerifyBuffer_ex(WOLFSSL_CERT_MANAGER* cm, const unsigned char* buff,
  *
  * Does not send the RESULT event: the caller sends it with
  * CM_CertEventResult() once its own checks and verify callback are done.
- * When the certificate failed a check the caller may yet accept, the strict
- * checks still run and their error is returned in strictErr.
+ * The enforced strict checks that fired are returned in strictPending, not in
+ * the return value, so the caller runs its own checks first.
  *
  * @param [in] cm      Certificate manager.
  * @param [in] buff    Buffer holding encoded certificate.
@@ -1250,17 +1294,18 @@ int CM_VerifyBuffer_ex(WOLFSSL_CERT_MANAGER* cm, const unsigned char* buff,
  * @param [in] depth   Chain depth: 0 for the certificate being verified.
  * @param [out] crlErr  CRL result, not merged into the return value. May be
  *                      NULL.
- * @param [out] strictErr  Error of an enforced strict check when the
- *                         certificate failed another check, otherwise 0.
+ * @param [out] strictPending  Enforced strict checks that fired and the
+ *                             verify callback did not allow. enum
+ *                             wc_CertEventStrict bits.
  * @return  WOLFSSL_SUCCESS on success.
  * @return  BAD_FUNC_ARG when cm or buff is NULL, or sz is not positive.
  * @return  WOLFSSL_BAD_FILETYPE when format is not supported.
  * @return  Other values on failure, as CM_VerifyBuffer_ex().
  */
 int CM_VerifyBufferDepth(WOLFSSL_CERT_MANAGER* cm, const unsigned char* buff,
-    long sz, int format, int depth, int* crlErr, int* strictErr)
+    long sz, int format, int depth, int* crlErr, word32* strictPending)
 {
-    *strictErr = 0;
+    *strictPending = 0;
     /* Same validation as wolfSSL_CertManagerVerifyBuffer(). */
     if ((cm == NULL) || (buff == NULL) || (sz <= 0)) {
         return BAD_FUNC_ARG;
@@ -1269,7 +1314,7 @@ int CM_VerifyBufferDepth(WOLFSSL_CERT_MANAGER* cm, const unsigned char* buff,
         return WOLFSSL_BAD_FILETYPE;
     }
     return CM_VerifyBuffer_int(cm, buff, sz, format, 0, crlErr, depth,
-        strictErr);
+        strictPending);
 }
 #endif /* WOLFSSL_CERT_EVENTS */
 

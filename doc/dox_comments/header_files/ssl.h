@@ -12700,8 +12700,9 @@ int wolfSSL_X509_STORE_SetCertEventCb(WOLFSSL_X509_STORE* store,
     error, such as ASN_STRICT_NO_AKID_E. For a certificate, the verify
     callback may override it; a CRL that fails is not loaded. The checks run
     last: when every other check passed, or once the verify callback allowed
-    what failed, in which case the strict failure is then passed to the
-    verify callback too. So allowing one failure never skips another check.
+    what failed. Each enforced strict failure is then passed to the verify
+    callback on its own, and each one must be allowed. So allowing one
+    failure never skips another check.
 
     Trust anchors are checked when they are loaded with verification: an
     enforced check that fires fails the load, and the verify callback is not

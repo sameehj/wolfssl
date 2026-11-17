@@ -659,8 +659,8 @@ static int X509StoreVerifyCert(WOLFSSL_X509_STORE_CTX* ctx, int* cbRejected,
     int depth = (ctx->chain != NULL) ? (int)ctx->chain->num : 0;
     /* The error the certificate failed with, for the RESULT event. */
     int evErr = 0;
-    /* An enforced strict check that fired while another check failed. */
-    int strictErr = 0;
+    /* Enforced strict checks that fired, applied after the other checks. */
+    word32 strictPending = 0;
 #endif
     WOLFSSL_ENTER("X509StoreVerifyCert");
 
@@ -671,7 +671,7 @@ static int X509StoreVerifyCert(WOLFSSL_X509_STORE_CTX* ctx, int* cbRejected,
         ret = CM_VerifyBufferDepth(ctx->store->cm,
                     ctx->current_cert->derCert->buffer,
                     (long)ctx->current_cert->derCert->length,
-                    WOLFSSL_FILETYPE_ASN1, depth, &crlRet, &strictErr);
+                    WOLFSSL_FILETYPE_ASN1, depth, &crlRet, &strictPending);
     #else
         ret = CM_VerifyBuffer_ex(ctx->store->cm,
                     ctx->current_cert->derCert->buffer,
@@ -710,10 +710,13 @@ static int X509StoreVerifyCert(WOLFSSL_X509_STORE_CTX* ctx, int* cbRejected,
         ret = X509StoreVerifyCertDate(ctx, ret);
     #endif
     #ifdef WOLFSSL_CERT_EVENTS
-        /* The other failures were overridden: the strict checks apply. */
-        if ((ret == WOLFSSL_SUCCESS) && (strictErr != 0)) {
-            ret = strictErr;
-            strictErr = 0;
+        /* The other checks passed or were overridden: the strict checks
+         * apply. */
+        if (ret == WOLFSSL_SUCCESS) {
+            int strictRet = wc_CertEventStrictNext(&strictPending);
+            if (strictRet != 0) {
+                ret = strictRet;
+            }
         }
         if (ret != WOLFSSL_SUCCESS) {
             evErr = ret;
@@ -734,9 +737,9 @@ static int X509StoreVerifyCert(WOLFSSL_X509_STORE_CTX* ctx, int* cbRejected,
                 ret = WOLFSSL_SUCCESS;
             #ifdef WOLFSSL_CERT_EVENTS
                 /* Another failure was allowed: the strict checks still
-                 * apply. */
-                if (strictErr != 0) {
-                    ret = strictErr;
+                 * apply, and each one must be allowed. */
+                while ((ret == WOLFSSL_SUCCESS) && (strictPending != 0)) {
+                    ret = wc_CertEventStrictNext(&strictPending);
                     evErr = ret;
                     SetupStoreCtxError(ctx, ret);
                     if (verifyCb(0, ctx) == 1) {

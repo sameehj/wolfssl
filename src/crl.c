@@ -625,11 +625,13 @@ static int CheckCertCRLList(WOLFSSL_CRL* crl, byte* issuerHash, byte* serial,
 
 /* cm is the CertManager to use for CRL signature verification and
  * callbacks. It can differ from crl->cm when checking CRLs the app supplied
- * with X509_STORE_CTX_set0_crls. The caller-owned crl is not modified. */
+ * with X509_STORE_CTX_set0_crls. The caller-owned crl is not modified.
+ * When listRet is not NULL, it gets the result of the CRL lookup before an
+ * entry that was not found is reported as CRL_MISSING. */
 static int CheckCertCRLCm(WOLFSSL_CRL* crl, byte* issuerHash, byte* serial,
         int serialSz, byte* serialHash, const byte* extCrlInfo,
         int extCrlInfoSz, void* issuerName, WOLFSSL_CERT_MANAGER* cm,
-        int canRetry)
+        int canRetry, int* listRet)
 {
     int        foundEntry = 0;
     int        ret = 0;
@@ -689,6 +691,9 @@ static int CheckCertCRLCm(WOLFSSL_CRL* crl, byte* issuerHash, byte* serial,
         }
     }
 #endif
+    if (listRet != NULL) {
+        *listRet = ret;
+    }
     /* A fetch that would block is retried, not a CRL found missing. */
     if (foundEntry == 0
     #ifdef WOLFSSL_NONBLOCK_OCSP
@@ -734,7 +739,7 @@ int CheckCertCRL_ex(WOLFSSL_CRL* crl, byte* issuerHash, byte* serial,
         int extCrlInfoSz, void* issuerName)
 {
     return CheckCertCRLCm(crl, issuerHash, serial, serialSz, serialHash,
-            extCrlInfo, extCrlInfoSz, issuerName, crl->cm, 1);
+            extCrlInfo, extCrlInfoSz, issuerName, crl->cm, 1, NULL);
 }
 
 /* Get the issuer X509_NAME of cert to pass to CheckCertCRLCm(). */
@@ -759,11 +764,18 @@ static void* CertCrlIssuerName(DecodedCert* cert)
  * The event is about the certificate checked. Nothing is sent for other
  * errors, such as a CRL lookup that would block.
  *
- * @param [in] cert  Decoded certificate that was checked.
- * @param [in] ret   Result of the CRL check.
+ * @param [in] cert     Decoded certificate that was checked.
+ * @param [in] ret      Result of the CRL check.
+ * @param [in] listRet  Result of the CRL lookup. A CRL that did not verify
+ *                      is reported by the check as CRL_MISSING.
  */
-static void CertEventCrlCheck(DecodedCert* cert, int ret)
+static void CertEventCrlCheck(DecodedCert* cert, int ret, int listRet)
 {
+    if ((ret == WC_NO_ERR_TRACE(CRL_MISSING)) &&
+            ((listRet == WC_NO_ERR_TRACE(ASN_CRL_CONFIRM_E)) ||
+             (listRet == WC_NO_ERR_TRACE(ASN_CRL_NO_SIGNER_E)))) {
+        ret = listRet;
+    }
     switch (ret) {
         case WC_NO_ERR_TRACE(CRL_CERT_REVOKED):
             wc_CertEventFailureCond(cert, ret, WC_CEV_FIELD_CRL_REVOKED,
@@ -917,13 +929,16 @@ static int CheckDecodedCertCRL(WOLFSSL_CRL* crl, DecodedCert* cert,
         WOLFSSL_CERT_MANAGER* cm, int canRetry)
 {
     int ret;
+    int listRet = 0;
     void* issuerName = CertCrlIssuerName(cert);
 
     ret = CheckCertCRLCm(crl, cert->issuerHash, cert->serial, cert->serialSz,
             NULL, cert->extCrlInfo, cert->extCrlInfoSz, issuerName, cm,
-            canRetry);
+            canRetry, &listRet);
 #ifdef WOLFSSL_CERT_EVENTS
-    CertEventCrlCheck(cert, ret);
+    CertEventCrlCheck(cert, ret, listRet);
+#else
+    (void)listRet;
 #endif
     return ret;
 }

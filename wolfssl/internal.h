@@ -3015,7 +3015,8 @@ WOLFSSL_LOCAL int CM_VerifyBuffer_ex(WOLFSSL_CERT_MANAGER* cm, const byte* buff,
 #ifdef WOLFSSL_CERT_EVENTS
 WOLFSSL_LOCAL int CM_VerifyBufferDepth(WOLFSSL_CERT_MANAGER* cm,
                                        const byte* buff, long sz, int format,
-                                       int depth, int* crlErr, int* strictErr);
+                                       int depth, int* crlErr,
+                                       word32* strictPending);
 WOLFSSL_LOCAL void CM_CertEventResult(WOLFSSL_CERT_MANAGER* cm, int error,
                                       int depth, const byte* der,
                                       word32 derSz, const DecodedCert* cert);
